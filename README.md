@@ -1,12 +1,12 @@
 # Redis Docker Setup
 
-Setup Redis menggunakan Docker Compose dengan network Traefik untuk server Ubuntu.
+Setup Redis menggunakan Docker Compose dengan network `infra_net`, nginx reverse proxy, dan Cloudflare Tunnel.
 
 ## 🚀 Quick Start
 
 ```bash
-# 1. Pastikan network traefik-network sudah ada
-docker network create traefik-network
+# 1. Pastikan network infra_net sudah ada
+docker network inspect infra_net
 
 # 2. Jalankan Redis
 docker compose up -d
@@ -19,7 +19,9 @@ docker exec -it redis redis-cli ping
 
 - Docker versi 29.1.2 atau lebih baru
 - Docker Compose
-- Network `traefik-network` (akan dibuat otomatis jika belum ada)
+- Network `infra_net` (harus sudah dibuat sebelumnya)
+- Nginx reverse proxy yang terhubung ke `infra_net`
+- Cloudflare Tunnel untuk akses eksternal
 
 ## 📁 Struktur File
 
@@ -37,10 +39,16 @@ redis/
 
 - **Image**: `redis:7-alpine`
 - **Container Name**: `redis`
-- **Port**: `6379`
-- **Network**: `traefik-network` (external)
+- **Port**: `6379` (internal, tidak di-expose ke host)
+- **Network**: `infra_net` (external)
 - **Volume**: `redis-data` (persistent storage)
 - **Health Check**: Enabled
+
+### Nginx & Cloudflare Tunnel
+
+Redis diakses melalui:
+- **Internal**: Container lain di network `infra_net` menggunakan hostname `redis:6379`
+- **External**: Melalui nginx reverse proxy dan Cloudflare Tunnel (jika dikonfigurasi)
 
 ### Redis Configuration
 
@@ -73,11 +81,14 @@ const client = redis.createClient({
 
 ### Dari Host (External)
 
-- **Host**: `localhost` atau IP server
-- **Port**: `6379`
+Redis tidak di-expose langsung ke host. Akses eksternal dilakukan melalui:
+- **Nginx Reverse Proxy**: Konfigurasi nginx untuk proxy ke `redis:6379`
+- **Cloudflare Tunnel**: Untuk akses dari internet (jika dikonfigurasi)
 
-```bash
-redis-cli -h localhost -p 6379
+Jika perlu akses langsung dari host untuk testing, tambahkan port mapping di `docker-compose.yml`:
+```yaml
+ports:
+  - "127.0.0.1:6379:6379"  # Hanya accessible dari localhost
 ```
 
 ## 📝 Perintah Berguna
@@ -157,9 +168,10 @@ sudo netstat -tulpn | grep 6379
 
 ### Tidak bisa koneksi dari container lain
 
-1. Pastikan container lain juga di network `traefik-network`
+1. Pastikan container lain juga di network `infra_net`
 2. Gunakan hostname `redis` (bukan `localhost`)
 3. Cek status container: `docker ps | grep redis`
+4. Verifikasi network: `docker network inspect infra_net`
 
 ## 📚 Dokumentasi Lengkap
 

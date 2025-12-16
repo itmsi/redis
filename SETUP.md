@@ -1,12 +1,14 @@
 # Tata Cara Setup Redis dengan Docker Compose
 
-Dokumen ini menjelaskan langkah-langkah untuk setup Redis menggunakan Docker Compose dengan network Traefik di server Ubuntu.
+Dokumen ini menjelaskan langkah-langkah untuk setup Redis menggunakan Docker Compose dengan network `infra_net`, nginx reverse proxy, dan Cloudflare Tunnel.
 
 ## Prasyarat
 
 1. **Docker** terinstall (versi 29.1.2 atau lebih baru)
 2. **Docker Compose** terinstall
-3. **Network Traefik** sudah dibuat sebelumnya
+3. **Network `infra_net`** sudah dibuat sebelumnya
+4. **Nginx** reverse proxy yang terhubung ke `infra_net`
+5. **Cloudflare Tunnel** untuk akses eksternal (opsional)
 
 ## Langkah-langkah Setup
 
@@ -19,18 +21,24 @@ docker --version
 docker compose version
 ```
 
-### 2. Buat Network Traefik (jika belum ada)
+### 2. Verifikasi Network infra_net
 
-Jika network `traefik-network` belum ada, buat terlebih dahulu:
+Pastikan network `infra_net` sudah ada:
 
 ```bash
-docker network create traefik-network
+docker network inspect infra_net
+```
+
+Jika network belum ada, buat terlebih dahulu:
+
+```bash
+docker network create infra_net
 ```
 
 Verifikasi network sudah dibuat:
 
 ```bash
-docker network ls | grep traefik-network
+docker network ls | grep infra_net
 ```
 
 ### 3. Persiapkan File Konfigurasi
@@ -60,7 +68,7 @@ Perintah ini akan:
 - Pull image Redis (jika belum ada)
 - Membuat volume untuk data persistence
 - Menjalankan container Redis di background
-- Menghubungkan ke network `traefik-network`
+- Menghubungkan ke network `infra_net`
 
 ### 6. Verifikasi Container Berjalan
 
@@ -91,15 +99,44 @@ Output yang diharapkan: `PONG`
 Untuk test dari container lain di network yang sama:
 
 ```bash
-# Dari container lain di traefik-network
+# Dari container lain di infra_net
 redis-cli -h redis ping
 ```
+
+### 9. Konfigurasi Nginx (Opsional)
+
+Jika ingin mengakses Redis melalui nginx reverse proxy, tambahkan konfigurasi di nginx:
+
+```nginx
+# Contoh konfigurasi nginx untuk Redis (stream proxy)
+stream {
+    upstream redis_backend {
+        server redis:6379;
+    }
+    
+    server {
+        listen 6379;
+        proxy_pass redis_backend;
+        proxy_timeout 1s;
+        proxy_responses 1;
+        error_log /var/log/nginx/redis_error.log;
+    }
+}
+```
+
+**Catatan**: Konfigurasi di atas hanya contoh. Sesuaikan dengan kebutuhan dan arsitektur nginx Anda.
+
+### 10. Konfigurasi Cloudflare Tunnel (Opsional)
+
+Untuk akses eksternal melalui Cloudflare Tunnel, konfigurasi tunnel Anda untuk mengarahkan ke nginx atau langsung ke Redis (jika diizinkan).
+
+**Peringatan Keamanan**: Pastikan Redis hanya diakses melalui jaringan yang aman. Jangan expose Redis langsung ke internet tanpa autentikasi yang kuat.
 
 ## Konfigurasi Tambahan
 
 ### Mengakses Redis dari Aplikasi
 
-Gunakan hostname `redis` dan port `6379` untuk mengakses dari container lain di network `traefik-network`:
+Gunakan hostname `redis` dan port `6379` untuk mengakses dari container lain di network `infra_net`:
 
 ```python
 # Contoh Python
@@ -118,10 +155,17 @@ const client = redis.createClient({
 
 ### Mengakses dari Host (External)
 
-Untuk mengakses dari host Ubuntu atau dari luar Docker:
+Redis tidak di-expose langsung ke host untuk keamanan. Akses eksternal dilakukan melalui:
 
-- **Host**: `localhost` atau IP server
-- **Port**: `6379`
+- **Nginx Reverse Proxy**: Konfigurasi nginx untuk proxy ke `redis:6379` di network `infra_net`
+- **Cloudflare Tunnel**: Untuk akses dari internet melalui Cloudflare
+
+Jika perlu akses langsung dari host untuk testing/development, tambahkan port mapping di `docker-compose.yml`:
+
+```yaml
+ports:
+  - "127.0.0.1:6379:6379"  # Hanya accessible dari localhost
+```
 
 ### Menambahkan Password (Opsional)
 
@@ -211,10 +255,10 @@ docker compose restart redis
 docker compose logs redis
 ```
 
-2. Pastikan network `traefik-network` sudah ada:
+2. Pastikan network `infra_net` sudah ada:
 
 ```bash
-docker network inspect traefik-network
+docker network inspect infra_net
 ```
 
 3. Pastikan port 6379 tidak digunakan aplikasi lain:
@@ -225,12 +269,18 @@ sudo netstat -tulpn | grep 6379
 
 ### Tidak Bisa Koneksi dari Container Lain
 
-1. Pastikan container lain juga menggunakan network `traefik-network`
+1. Pastikan container lain juga menggunakan network `infra_net`
 2. Gunakan hostname `redis` (bukan `localhost`)
 3. Cek apakah Redis container berjalan:
 
 ```bash
 docker ps | grep redis
+```
+
+4. Verifikasi network connection:
+
+```bash
+docker network inspect infra_net | grep redis
 ```
 
 ### Permission Denied pada Volume
@@ -244,22 +294,28 @@ sudo chown -R $USER:$USER ./redis-data
 ## Informasi Teknis
 
 - **Image**: `redis:7-alpine` (versi 7, Alpine Linux)
-- **Port**: `6379` (default Redis port)
+- **Port**: `6379` (default Redis port, internal only)
 - **Volume**: `redis-data` (persistent storage)
-- **Network**: `traefik-network` (external)
+- **Network**: `infra_net` (external)
 - **Health Check**: Otomatis setiap 10 detik
+- **Reverse Proxy**: Nginx (jika dikonfigurasi)
+- **External Access**: Cloudflare Tunnel (jika dikonfigurasi)
 
 ## Keamanan
 
-1. **Firewall**: Pastikan port 6379 tidak terbuka ke internet jika tidak diperlukan
-2. **Password**: Aktifkan password jika Redis akan diakses dari luar
-3. **Network**: Gunakan Docker network untuk isolasi
-4. **Backup**: Lakukan backup data secara berkala
+1. **Network Isolation**: Redis hanya accessible dari network `infra_net`, tidak di-expose ke host
+2. **Password**: Aktifkan password di `redis.conf` jika Redis akan diakses melalui nginx/Cloudflare Tunnel
+3. **Nginx**: Gunakan nginx sebagai reverse proxy untuk kontrol akses yang lebih baik
+4. **Cloudflare Tunnel**: Gunakan Cloudflare Tunnel untuk akses eksternal yang aman
+5. **Backup**: Lakukan backup data secara berkala
+6. **Firewall**: Pastikan port 6379 tidak terbuka langsung ke internet
 
 ## Support
 
 Jika ada masalah, cek:
 - Logs container: `docker compose logs redis`
 - Status container: `docker compose ps`
-- Network: `docker network inspect traefik-network`
+- Network: `docker network inspect infra_net`
+- Nginx logs (jika menggunakan nginx): `docker logs <nginx-container>`
+- Cloudflare Tunnel status (jika menggunakan tunnel)
 
